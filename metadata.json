@@ -1,0 +1,8 @@
+{
+  "name": "Abstractive Hierarchical Summarizer",
+  "description": "A long document summarization tool using RAG architecture and Gemini 3.1 Pro for precise, multimodal summaries.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
