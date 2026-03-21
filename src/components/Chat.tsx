@@ -4,6 +4,7 @@ import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, u
 import { Send, Paperclip, FileText, Image as ImageIcon, X, Loader2, Bot, User } from 'lucide-react';
 import { Message, Attachment, OperationType } from '../types';
 import { generateSummary, generateTitle, handleFirestoreError } from '../services/geminiService';
+import { processPdf } from '../utils/pdfUtils';
 import Markdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -57,23 +58,41 @@ export default function Chat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
-    Array.from(files).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const base64 = event.target?.result as string;
-        const data = base64.split(',')[1];
-        setAttachments(prev => [...prev, {
-          name: file.name,
-          type: file.type,
-          data: data
-        }]);
-      };
-      reader.readAsDataURL(file);
-    });
+    setIsLoading(true);
+    for (const file of Array.from(files)) {
+      if (file.type === 'application/pdf') {
+        try {
+          const { text, previewDataUrl } = await processPdf(file);
+          setAttachments(prev => [...prev, {
+            name: file.name,
+            type: file.type,
+            data: text,
+            previewDataUrl,
+            isRawText: true
+          }]);
+        } catch (error) {
+          console.error("Error processing PDF:", error);
+          alert("Failed to process PDF file.");
+        }
+      } else {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const base64 = event.target?.result as string;
+          const data = base64.split(',')[1];
+          setAttachments(prev => [...prev, {
+            name: file.name,
+            type: file.type,
+            data: data
+          }]);
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+    setIsLoading(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -109,7 +128,7 @@ export default function Chat({
         content: input,
         timestamp: serverTimestamp(),
         // Strip base64 data before saving to Firestore to avoid 1MB limit
-        attachments: attachments.length > 0 ? attachments.map(({ name, type }) => ({ name, type })) : null
+        attachments: attachments.length > 0 ? attachments.map(({ name, type, previewDataUrl }) => ({ name, type, previewDataUrl: previewDataUrl || null })) : null
       };
       
       try {
@@ -206,7 +225,13 @@ export default function Chat({
                 <div className={cn("flex flex-wrap gap-2 mb-2", msg.role === 'user' ? "justify-end" : "justify-start")}>
                   {msg.attachments.map((att, i) => (
                     <div key={i} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-white/60">
-                      {att.type.startsWith('image/') ? <ImageIcon className="w-3 h-3" /> : <FileText className="w-3 h-3" />}
+                      {att.previewDataUrl ? (
+                        <img src={att.previewDataUrl} alt="PDF preview" className="w-4 h-4 object-cover rounded-sm" referrerPolicy="no-referrer" />
+                      ) : att.type.startsWith('image/') ? (
+                        <ImageIcon className="w-3 h-3" />
+                      ) : (
+                        <FileText className="w-3 h-3" />
+                      )}
                       {att.name}
                     </div>
                   ))}
@@ -253,7 +278,13 @@ export default function Chat({
               >
                 {attachments.map((att, i) => (
                   <div key={i} className="group relative flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-sm text-white/80">
-                    {att.type.startsWith('image/') ? <ImageIcon className="w-4 h-4 text-emerald-500" /> : <FileText className="w-4 h-4 text-emerald-500" />}
+                    {att.previewDataUrl ? (
+                      <img src={att.previewDataUrl} alt="PDF preview" className="w-6 h-6 object-cover rounded" referrerPolicy="no-referrer" />
+                    ) : att.type.startsWith('image/') ? (
+                      <img src={`data:${att.type};base64,${att.data}`} alt="preview" className="w-6 h-6 object-cover rounded" referrerPolicy="no-referrer" />
+                    ) : (
+                      <FileText className="w-4 h-4 text-emerald-500" />
+                    )}
                     <span className="max-w-[150px] truncate">{att.name}</span>
                     <button 
                       onClick={() => removeAttachment(i)}

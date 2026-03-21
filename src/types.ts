@@ -17,7 +17,9 @@ export interface Chat {
 export interface Attachment {
   name: string;
   type: string;
-  data: string; // Base64
+  data: string; // Base64 or text content
+  previewDataUrl?: string; // For PDF previews
+  isRawText?: boolean; // Flag to indicate raw text vs base64
 }
 
 export interface Message {

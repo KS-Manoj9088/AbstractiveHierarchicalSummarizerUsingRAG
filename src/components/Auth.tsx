@@ -30,6 +30,9 @@ export default function Auth({ user, onSignOut }: { user: any, onSignOut: () => 
         alert("Sign-in popup was blocked by your browser. Please allow popups for this site.");
       } else if (error.code === 'auth/cancelled-popup-request') {
         console.log("Sign-in popup was closed before completion.");
+      } else if (error.code === 'auth/unauthorized-domain') {
+        alert("This domain is not authorized for Firebase Authentication. Please add it to the Authorized Domains in your Firebase Console.");
+        console.error("Unauthorized domain error. Add this domain to Firebase Auth settings:", window.location.hostname);
       } else {
         console.error("Sign-in error:", error);
       }
