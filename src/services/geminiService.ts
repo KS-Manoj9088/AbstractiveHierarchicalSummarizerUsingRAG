@@ -1,6 +1,7 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { auth } from "../firebase";
 import { OperationType, FirestoreErrorInfo } from "../types";
+import { retrieveRelevantChunks } from "./vectorStore";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
@@ -52,20 +53,7 @@ function cosineSimilarity(a: number[], b: number[]) {
 
 export async function generateSummary(content: string, attachments?: { name: string, type: string, data: string, isRawText?: boolean }[]) {
   const model = "gemini-3.1-pro-preview";
-  
-  const systemInstruction = `
-    You are an Abstractive Hierarchical Summarizer, conceptually optimized on the 'BIG-PATENT' and 'GOV Report' datasets.
-    Your goal is to provide precise, accurate, and highly professional abstractive summaries for long English documents.
-    
-    RULES:
-    1. ONLY support English. If the document is in another language, state that you only support English.
-    2. Adopt the formal, precise, and structured tone characteristic of BIG-PATENT and GOV Report datasets.
-    3. Use a hierarchical approach: identify key claims/findings, summarize them, and provide a cohesive overall executive summary.
-    4. Be abstractive: synthesize the information into novel, concise sentences rather than extracting verbatim quotes.
-    5. Focus heavily on technical accuracy, methodologies, and core conclusions.
-  `;
 
-  let parts: any[] = [];
   let rawTextContent = content || "";
   const binaryAttachments: any[] = [];
 
@@ -75,14 +63,51 @@ export async function generateSummary(content: string, attachments?: { name: str
         rawTextContent += `\n\n--- Document: ${attachment.name} ---\n${attachment.data}`;
       } else {
         binaryAttachments.push({
-          inlineData: {
-            mimeType: attachment.type,
-            data: attachment.data
-          }
+          inlineData: { mimeType: attachment.type, data: attachment.data }
         });
       }
     }
   }
+
+  // --- BigPatent RAG: retrieve relevant patent context for grounding ---
+  let bigPatentContext = "";
+  try {
+    const queryText = rawTextContent.slice(0, 2000) || "patent abstract claims technical summary";
+    const queryEmbedRes = await ai.models.embedContent({
+      model: "gemini-embedding-2-preview",
+      contents: queryText,
+    });
+    const queryEmbedding = queryEmbedRes.embeddings?.[0]?.values ?? [];
+
+    if (queryEmbedding.length > 0) {
+      const relevantChunks = await retrieveRelevantChunks(queryEmbedding, 5);
+      if (relevantChunks.length > 0) {
+        bigPatentContext = `
+RETRIEVED BIGPATENT REFERENCE EXAMPLES (use these as style and structure references):
+${relevantChunks.map((c, i) => `[Ref ${i + 1} | Patent ${c.id} | Score: ${c.score.toFixed(3)}]\n${c.text}`).join("\n\n---\n\n")}
+`;
+        console.log(`BigPatent RAG: injected ${relevantChunks.length} reference chunks`);
+      }
+    }
+  } catch (e) {
+    console.warn("BigPatent RAG retrieval skipped:", e);
+  }
+
+  const systemInstruction = `
+    You are an Abstractive Hierarchical Summarizer trained on the BIG-PATENT and GOV Report datasets.
+    Your goal is to provide precise, accurate, and highly professional abstractive summaries for long English documents.
+
+    ${bigPatentContext ? "You have been provided with real BigPatent reference examples above. Use them to calibrate your summarization style, structure, and technical precision." : ""}
+
+    RULES:
+    1. ONLY support English. If the document is in another language, state that you only support English.
+    2. Adopt the formal, precise, and structured tone characteristic of BIG-PATENT and GOV Report datasets.
+    3. Use a hierarchical approach: identify key claims/findings, summarize them, and provide a cohesive overall executive summary.
+    4. Be abstractive: synthesize the information into novel, concise sentences rather than extracting verbatim quotes.
+    5. Focus heavily on technical accuracy, methodologies, and core conclusions.
+  `;
+
+  let parts: any[] = [];
 
   // RAG Implementation for long text
   if (rawTextContent.length > 15000) {
@@ -131,13 +156,17 @@ export async function generateSummary(content: string, attachments?: { name: str
       // Retrieve top K chunks
       const topChunks = scoredChunks.slice(0, 15).map(c => c.text);
       
-      parts.push({ text: `Please summarize the following extracted key sections of the document using RAG retrieval:\n\n${topChunks.join('\n\n...\n\n')}` });
+      const ragPrompt = bigPatentContext
+        ? `${bigPatentContext}\n\nPlease summarize the following extracted key sections of the document using RAG retrieval:\n\n${topChunks.join('\n\n...\n\n')}`
+        : `Please summarize the following extracted key sections of the document using RAG retrieval:\n\n${topChunks.join('\n\n...\n\n')}`;
+      parts.push({ text: ragPrompt });
     } catch (error) {
       console.error("RAG Embedding failed, falling back to full text:", error);
-      parts.push({ text: rawTextContent });
+      parts.push({ text: bigPatentContext ? `${bigPatentContext}\n\n${rawTextContent}` : rawTextContent });
     }
   } else {
-    parts.push({ text: rawTextContent || "Summarize the attached document." });
+    const baseText = rawTextContent || "Summarize the attached document.";
+    parts.push({ text: bigPatentContext ? `${bigPatentContext}\n\n${baseText}` : baseText });
   }
 
   parts = parts.concat(binaryAttachments);
