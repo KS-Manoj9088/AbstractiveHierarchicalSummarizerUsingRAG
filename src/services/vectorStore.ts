@@ -3,6 +3,10 @@
  * The index is built by running: npx tsx scripts/buildBigPatentIndex.ts
  */
 
+// Static import — Vite handles JSON natively and tree-shakes it correctly at build time.
+// If the index is empty (not yet built), retrieval simply returns no results.
+import indexData from "../data/bigpatent-index.json";
+
 interface IndexEntry {
   id: string;
   category: string;
@@ -31,37 +35,25 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-let cachedIndex: IndexEntry[] | null = null;
+const index: IndexEntry[] = Array.isArray(indexData) ? (indexData as IndexEntry[]) : [];
 
-export async function loadIndex(): Promise<IndexEntry[]> {
-  if (cachedIndex) return cachedIndex;
-
-  try {
-    // Vite handles JSON imports natively
-    const module = await import("../data/bigpatent-index.json");
-    cachedIndex = module.default as IndexEntry[];
-    console.log(`BigPatent index loaded: ${cachedIndex.length} entries`);
-    return cachedIndex;
-  } catch {
-    console.warn(
-      "BigPatent index not found. Run: npx tsx scripts/buildBigPatentIndex.ts"
-    );
-    return [];
-  }
+if (index.length > 0) {
+  console.log(`BigPatent index loaded: ${index.length} entries`);
+} else {
+  console.warn("BigPatent index is empty. Run: npm run build:rag-index");
 }
 
 /**
  * Retrieve the top-K most relevant chunks from the BigPatent index
  * given a query embedding.
  */
-export async function retrieveRelevantChunks(
+export function retrieveRelevantChunks(
   queryEmbedding: number[],
-  topK: number = 5
-): Promise<RetrievedChunk[]> {
-  const index = await loadIndex();
+  topK = 5
+): RetrievedChunk[] {
   if (index.length === 0) return [];
 
-  const scored = index
+  return index
     .map((entry) => ({
       text: entry.text,
       score: cosineSimilarity(queryEmbedding, entry.embedding),
@@ -69,7 +61,6 @@ export async function retrieveRelevantChunks(
       category: entry.category,
     }))
     .filter((e) => e.score > 0)
-    .sort((a, b) => b.score - a.score);
-
-  return scored.slice(0, topK);
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
 }
